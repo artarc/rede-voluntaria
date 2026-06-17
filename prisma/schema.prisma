@@ -1,0 +1,205 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+
+  @@map("tenant_status")
+}
+
+enum FormStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+
+  @@map("form_status")
+}
+
+enum FieldType {
+  TEXT
+  NUMBER
+  SELECT
+  MULTI_SELECT
+  DATE
+  FILE
+  BOOLEAN
+
+  @@map("field_type")
+}
+
+enum SubmissionStatus {
+  RECEIVED
+  IN_REVIEW
+  APPROVED
+  REJECTED
+
+  @@map("submission_status")
+}
+
+model Tenant {
+  id        String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  slug      String       @unique
+  status    TenantStatus @default(ACTIVE)
+  metadata  Json         @default("{}")
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  forms       Form[]
+  submissions Submission[]
+
+  @@map("tenants")
+}
+
+model Form {
+  id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String     @map("tenant_id") @db.Uuid
+  name              String
+  slug              String
+  description       String?
+  status            FormStatus @default(DRAFT)
+  currentVersionId  String?    @unique @map("current_version_id") @db.Uuid
+  createdAt         DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  currentVersion FormVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions       FormVersion[] @relation("FormVersions")
+  submissions    Submission[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("forms")
+}
+
+model FormVersion {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  formId      String    @map("form_id") @db.Uuid
+  version     Int
+  title       String
+  description String?
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  form             Form           @relation("FormVersions", fields: [formId], references: [id], onDelete: Cascade)
+  currentForForms  Form[]         @relation("CurrentVersion")
+  fields           FormField[]
+  submissions      Submission[]
+
+  @@unique([formId, version])
+  @@index([tenantId])
+  @@index([tenantId, formId])
+  @@map("form_versions")
+}
+
+model FormField {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  formVersionId String    @map("form_version_id") @db.Uuid
+  key           String
+  label         String
+  type          FieldType
+  required      Boolean   @default(false)
+  position      Int
+  placeholder   String?
+  helpText      String?   @map("help_text")
+  config        Json      @default("{}")
+  condition     Json?
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  formVersion FormVersion       @relation(fields: [formVersionId], references: [id], onDelete: Cascade)
+  options     FormFieldOption[]
+  values      SubmissionValue[]
+
+  @@unique([formVersionId, key])
+  @@index([tenantId])
+  @@index([tenantId, formVersionId])
+  @@map("form_fields")
+}
+
+model FormFieldOption {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  fieldId   String   @map("field_id") @db.Uuid
+  label     String
+  value     String
+  position  Int
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  field FormField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  @@unique([fieldId, value])
+  @@index([tenantId])
+  @@index([fieldId])
+  @@map("form_field_options")
+}
+
+model Submission {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String           @map("tenant_id") @db.Uuid
+  formId        String           @map("form_id") @db.Uuid
+  formVersionId String           @map("form_version_id") @db.Uuid
+  status        SubmissionStatus @default(RECEIVED)
+  submitterIp   String?          @map("submitter_ip")
+  userAgent     String?          @map("user_agent")
+  metadata      Json             @default("{}")
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  form        Form              @relation(fields: [formId], references: [id], onDelete: Cascade)
+  formVersion FormVersion       @relation(fields: [formVersionId], references: [id], onDelete: Restrict)
+  values      SubmissionValue[]
+  files       UploadedFile[]
+
+  @@index([tenantId])
+  @@index([tenantId, formId, createdAt])
+  @@index([tenantId, status])
+  @@map("submissions")
+}
+
+model SubmissionValue {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  submissionId String   @map("submission_id") @db.Uuid
+  fieldId      String   @map("field_id") @db.Uuid
+  value        Json
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  field      FormField  @relation(fields: [fieldId], references: [id], onDelete: Restrict)
+
+  @@unique([submissionId, fieldId])
+  @@index([tenantId])
+  @@index([tenantId, fieldId])
+  @@map("submission_values")
+}
+
+model UploadedFile {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  submissionId String   @map("submission_id") @db.Uuid
+  fieldKey     String   @map("field_key")
+  fileName     String   @map("file_name")
+  mimeType     String   @map("mime_type")
+  sizeBytes    BigInt   @map("size_bytes")
+  storageKey   String   @map("storage_key")
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([submissionId])
+  @@map("uploaded_files")
+}
