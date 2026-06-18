@@ -1,13 +1,23 @@
 services:
+  frontend:
+    build:
+      context: ./frontend
+    container_name: rede-voluntaria-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
   api:
     build: .
     container_name: rede-voluntaria-api
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/rede_voluntaria?schema=public
-      PORT: 3333
-      LOG_LEVEL: info
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/rede_voluntaria
+      JWT_SECRET: change-me-in-production
+      SEED_ADMIN_EMAIL: admin@redevoluntariado.org.br
+      SEED_ADMIN_PASSWORD: admin123
     ports:
-      - "3333:3333"
+      - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -22,7 +32,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_python_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d rede_voluntaria"]
       interval: 5s
@@ -30,4 +40,4 @@ services:
       retries: 10
 
 volumes:
-  postgres_data:
+  postgres_python_data:
