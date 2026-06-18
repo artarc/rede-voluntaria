@@ -1,30 +1,15 @@
-FROM node:22-alpine AS build
+FROM python:3.12-slim
 
 WORKDIR /app
-RUN apk add --no-cache openssl
 
-COPY package*.json ./
-RUN npm ci
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-COPY prisma ./prisma
-RUN npx prisma generate
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY tsconfig.json ./
-COPY src ./src
-RUN npm run build
+COPY app ./app
 
-FROM node:22-alpine AS runtime
+EXPOSE 8000
 
-WORKDIR /app
-ENV NODE_ENV=production
-RUN apk add --no-cache openssl
-
-COPY package*.json ./
-COPY prisma ./prisma
-RUN npm ci --omit=dev && npx prisma generate && npm cache clean --force
-
-COPY --from=build /app/dist ./dist
-
-EXPOSE 3333
-
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
