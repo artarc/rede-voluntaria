@@ -27,12 +27,25 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     role: str = "VOLUNTEER"
+    tenant_id: uuid.UUID | None = None
+
+
+class UserUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=180)
+    email: EmailStr | None = None
+    role: str | None = None
+    tenant_id: uuid.UUID | None = None
+    status: str | None = None
 
 
 class VolunteerRegister(BaseModel):
     name: str = Field(min_length=2, max_length=180)
     email: EmailStr
     password: str = Field(min_length=6)
+
+
+class VolunteerLoginCreate(BaseModel):
+    password: str | None = Field(default=None, min_length=6)
 
 
 class LoginInput(BaseModel):
@@ -76,6 +89,52 @@ class AvailabilityInput(BaseModel):
     hours: str | None = None
 
 
+class PhoneOut(BaseModel):
+    id: uuid.UUID
+    phone: str
+    whatsapp: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CourseOut(BaseModel):
+    id: uuid.UUID
+    level: str | None
+    area: str | None
+    conclusion: str | None
+    course: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkOut(BaseModel):
+    id: uuid.UUID
+    area: str | None
+    period: str | None
+    duration: str | None
+    description: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VolunteerExperienceOut(BaseModel):
+    id: uuid.UUID
+    period: str | None
+    duration: str | None
+    description: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AvailabilityOut(BaseModel):
+    id: uuid.UUID
+    day_week: str | None
+    period: str | None
+    hours: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class VolunteerCreate(BaseModel):
     name: str = Field(min_length=2, max_length=180)
     gender: str | None = Field(default=None, max_length=20)
@@ -109,9 +168,28 @@ class VolunteerOut(BaseModel):
     schooling: int | None
     no_volunteer: bool
     no_work: bool
+    review_status: str
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AdminVolunteerOut(VolunteerOut):
+    tenant_name: str | None = None
+    user_email: str | None = None
+    login_created: bool
+    status_label: str
+    phones: list[PhoneOut] = Field(default_factory=list)
+    courses: list[CourseOut] = Field(default_factory=list)
+    work_experiences: list[WorkOut] = Field(default_factory=list)
+    volunteer_experiences: list[VolunteerExperienceOut] = Field(default_factory=list)
+    availability: list[AvailabilityOut] = Field(default_factory=list)
+
+
+class VolunteerLoginOut(BaseModel):
+    message: str
+    temporary_password: str | None = None
+    volunteer: AdminVolunteerOut
 
 
 class UserOut(BaseModel):
@@ -120,9 +198,26 @@ class UserOut(BaseModel):
     name: str
     email: str
     role: str
+    origin: str
+    account_status: str
     active: bool
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AdminUserOut(UserOut):
+    user_type: str
+    user_type_label: str
+    origin_label: str
+    status_label: str
+    tenant_name: str | None = None
+    volunteer_id: uuid.UUID | None = None
+
+
+class UserActionOut(BaseModel):
+    message: str
+    user: AdminUserOut
 
 
 class TaskUserOut(BaseModel):

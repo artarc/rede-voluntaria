@@ -14,6 +14,26 @@ class UserRole(str, enum.Enum):
     VOLUNTEER = "VOLUNTEER"
 
 
+class UserOrigin(str, enum.Enum):
+    ADMINISTRATOR = "ADMINISTRATOR"
+    VOLUNTEER = "VOLUNTEER"
+
+
+class UserAccountStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    BLOCKED = "BLOCKED"
+    REJECTED = "REJECTED"
+    INACTIVE = "INACTIVE"
+
+
+class VolunteerReviewStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    LOGIN_CREATED = "LOGIN_CREATED"
+    REJECTED = "REJECTED"
+    ARCHIVED = "ARCHIVED"
+
+
 class TaskPriority(str, enum.Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
@@ -58,6 +78,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.VOLUNTEER)
+    origin: Mapped[UserOrigin] = mapped_column(String(32), nullable=False, default=UserOrigin.ADMINISTRATOR)
+    account_status: Mapped[UserAccountStatus] = mapped_column(String(32), nullable=False, default=UserAccountStatus.ACTIVE)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -95,6 +117,7 @@ class Volunteer(Base):
     schooling: Mapped[int | None] = mapped_column(nullable=True)
     no_volunteer: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     no_work: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default=VolunteerReviewStatus.PENDING.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

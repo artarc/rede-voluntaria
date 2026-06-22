@@ -256,7 +256,7 @@ function VolunteerForm() {
         availability: payload.availability.filter((item) => item.hours?.trim()),
       });
       setStatus("success");
-      setMessage("Cadastro realizado com sucesso.");
+      setMessage("Cadastro recebido. A entidade analisara seus dados e decidira se um login sera criado.");
       setPayload(initialPayload);
       setAffinities([]);
     } catch (error) {
@@ -305,7 +305,7 @@ function VolunteerForm() {
             </label>
             <label className="wide">
               E-mail
-              <input type="email" value={payload.email} onChange={(event) => update("email", event.target.value)} />
+              <input required type="email" value={payload.email} onChange={(event) => update("email", event.target.value)} />
             </label>
           </div>
         </fieldset>

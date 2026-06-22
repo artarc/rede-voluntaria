@@ -49,6 +49,9 @@ export function createVolunteer(payload: VolunteerPayload) {
 }
 
 export type UserRole = "ADMIN" | "VOLUNTEER";
+export type AdminUserType = "GENERAL_ADMIN" | "ENTITY_ADMIN" | "VOLUNTEER";
+export type UserOrigin = "ADMINISTRATOR" | "VOLUNTEER";
+export type UserAccountStatus = "PENDING" | "ACTIVE" | "BLOCKED" | "REJECTED" | "INACTIVE";
 export type TaskPriority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
 export type TaskStatus = "BLOCKED" | "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELED";
 
@@ -67,7 +70,10 @@ export type SessionUser = {
   name: string;
   email: string;
   role: UserRole;
+  origin: UserOrigin;
+  account_status: UserAccountStatus;
   active: boolean;
+  created_at: string;
 };
 
 export type TaskUser = {
@@ -75,6 +81,44 @@ export type TaskUser = {
   tenant_id: string;
   name: string;
   email: string;
+};
+
+export type AdminUser = SessionUser & {
+  user_type: AdminUserType;
+  user_type_label: string;
+  origin_label: string;
+  status_label: string;
+  tenant_name?: string | null;
+  volunteer_id?: string | null;
+};
+
+export type VolunteerReviewStatus = "PENDING" | "LOGIN_CREATED" | "REJECTED" | "ARCHIVED";
+
+export type VolunteerSubmission = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  gender?: string | null;
+  fullname?: string | null;
+  birthday?: string | null;
+  legal_id?: string | null;
+  email?: string | null;
+  preferences?: string | null;
+  comment?: string | null;
+  schooling?: number | null;
+  no_volunteer: boolean;
+  no_work: boolean;
+  review_status: VolunteerReviewStatus;
+  created_at: string;
+  tenant_name?: string | null;
+  user_email?: string | null;
+  login_created: boolean;
+  status_label: string;
+  phones: Array<{ id: string; phone: string; whatsapp?: string | null }>;
+  courses: Array<{ id: string; level?: string | null; area?: string | null; conclusion?: string | null; course: string }>;
+  work_experiences: Array<{ id: string; area?: string | null; period?: string | null; duration?: string | null; description: string }>;
+  volunteer_experiences: Array<{ id: string; period?: string | null; duration?: string | null; description: string }>;
+  availability: Array<{ id: string; day_week?: string | null; period?: string | null; hours?: string | null }>;
 };
 
 export type ProcessTask = {
@@ -154,6 +198,70 @@ export function me(token: string) {
 
 export function listVolunteers(token: string) {
   return request<Array<{ id: string; name: string; email?: string; created_at: string; tenant_id: string }>>("/volunteers", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function listUsers(token: string, filters: Record<string, string> = {}) {
+  const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
+  const query = params.toString() ? `?${params}` : "";
+  return request<AdminUser[]>(`/users${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function updateUser(
+  token: string,
+  userId: string,
+  payload: { name?: string; email?: string; role?: AdminUserType; tenant_id?: string; status?: UserAccountStatus },
+) {
+  return request<AdminUser>(`/users/${userId}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function userAction(
+  token: string,
+  userId: string,
+  action: "approve" | "reject" | "block" | "unblock" | "deactivate",
+) {
+  return request<AdminUser>(`/users/${userId}/${action}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function resendUserAccess(token: string, userId: string) {
+  return request<{ message: string; user: AdminUser }>(`/users/${userId}/resend-access`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function listVolunteerSubmissions(token: string, filters: Record<string, string> = {}) {
+  const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
+  const query = params.toString() ? `?${params}` : "";
+  return request<VolunteerSubmission[]>(`/volunteer-submissions${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function createVolunteerLogin(token: string, volunteerId: string, password?: string) {
+  return request<{ message: string; temporary_password?: string | null; volunteer: VolunteerSubmission }>(
+    `/volunteer-submissions/${volunteerId}/create-login`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ password: password || undefined }),
+    },
+  );
+}
+
+export function rejectVolunteerSubmission(token: string, volunteerId: string) {
+  return request<VolunteerSubmission>(`/volunteer-submissions/${volunteerId}/reject`, {
+    method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
 }

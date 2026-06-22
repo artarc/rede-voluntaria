@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import User
+from app.models import User, UserAccountStatus
 
 
 password_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -49,7 +49,7 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido.") from exc
 
     user = db.get(User, user_id)
-    if not user or not user.active:
+    if not user or not user.active or user.account_status != UserAccountStatus.ACTIVE:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario inativo ou inexistente.")
 
     return user

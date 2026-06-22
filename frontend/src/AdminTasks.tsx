@@ -5,11 +5,15 @@ import {
   ArrowUp,
   Building2,
   CalendarClock,
+  Ban,
   CheckCircle2,
   ClipboardList,
   Edit3,
+  Eye,
+  FileText,
   Filter,
   HandHeart,
+  KeyRound,
   LayoutDashboard,
   ListChecks,
   Lock,
@@ -20,26 +24,40 @@ import {
   Plus,
   Save,
   Search,
+  Send,
   Settings,
+  ShieldCheck,
   Trash2,
+  UserCheck,
   UserCircle,
+  UserCog,
+  UserX,
 } from "lucide-react";
 import { forwardRef, useEffect, useMemo, useState } from "react";
 import type { ButtonHTMLAttributes, FormEvent, InputHTMLAttributes, ReactNode } from "react";
 import {
   completeTask,
   createProcess,
+  createVolunteerLogin,
   deleteProcess,
+  listVolunteerSubmissions,
+  listUsers,
   listProcesses,
   login,
   me,
   myCurrentTasks,
+  resendUserAccess,
+  rejectVolunteerSubmission,
   startTask,
   taskFilters,
   taskSummary,
+  updateUser,
   updateProcess,
+  userAction,
 } from "./api";
 import type {
+  AdminUser,
+  AdminUserType,
   ProcessPayload,
   ProcessTask,
   SessionUser,
@@ -48,9 +66,13 @@ import type {
   TaskProcess,
   TaskStatus,
   TaskSummary,
+  UserAccountStatus,
+  UserOrigin,
+  VolunteerReviewStatus,
+  VolunteerSubmission,
 } from "./api";
 
-type AdminView = "dashboard" | "processes" | "detail" | "form" | "tracking";
+type AdminView = "dashboard" | "volunteers" | "users" | "processes" | "detail" | "form" | "tracking";
 type LoginMode = "admin" | "collaborator";
 
 type StepDraft = {
@@ -85,6 +107,32 @@ const statuses: Array<{ value: TaskStatus; label: string }> = [
   { value: "BLOCKED", label: "Bloqueada" },
   { value: "COMPLETED", label: "Concluida" },
   { value: "CANCELED", label: "Cancelada" },
+];
+
+const userTypes: Array<{ value: AdminUserType; label: string }> = [
+  { value: "GENERAL_ADMIN", label: "Administrador Geral" },
+  { value: "ENTITY_ADMIN", label: "Administrador da Entidade" },
+  { value: "VOLUNTEER", label: "Voluntario" },
+];
+
+const userOrigins: Array<{ value: UserOrigin; label: string }> = [
+  { value: "ADMINISTRATOR", label: "administrador" },
+  { value: "VOLUNTEER", label: "voluntario" },
+];
+
+const userStatuses: Array<{ value: UserAccountStatus; label: string }> = [
+  { value: "PENDING", label: "pendente" },
+  { value: "ACTIVE", label: "ativo" },
+  { value: "BLOCKED", label: "bloqueado" },
+  { value: "REJECTED", label: "reprovado" },
+  { value: "INACTIVE", label: "inativo" },
+];
+
+const volunteerStatuses: Array<{ value: VolunteerReviewStatus; label: string }> = [
+  { value: "PENDING", label: "pendente" },
+  { value: "LOGIN_CREATED", label: "login criado" },
+  { value: "REJECTED", label: "reprovado" },
+  { value: "ARCHIVED", label: "arquivado" },
 ];
 
 function cn(...classes: Array<string | false | null | undefined>) {
@@ -311,7 +359,7 @@ function AdminShell({ token, user, onLogout }: { token: string; user: SessionUse
             title={pageTitle(view)}
             description={pageDescription(view)}
             actions={
-              <Button onClick={openNewForm}>
+              view === "users" || view === "volunteers" ? undefined : <Button onClick={openNewForm}>
                 <Plus className="h-4 w-4" />
                 Novo processo
               </Button>
@@ -333,6 +381,12 @@ function AdminShell({ token, user, onLogout }: { token: string; user: SessionUse
                     setView("detail");
                   }}
                 />
+              )}
+              {view === "volunteers" && (
+                <VolunteerSubmissionsIndex token={token} filters={filters} />
+              )}
+              {view === "users" && (
+                <UsersIndex token={token} filters={filters} />
               )}
               {view === "processes" && (
                 <ProcessList processes={processes} onOpen={(process) => { setSelectedProcessId(process.id); setView("detail"); }} onEdit={openEditForm} onDelete={removeProcess} />
@@ -373,6 +427,8 @@ function Sidebar({
 }) {
   const items: Array<{ view: AdminView; label: string; icon: ReactNode }> = [
     { view: "dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> },
+    { view: "volunteers", label: "Voluntarios", icon: <FileText className="h-4 w-4" /> },
+    { view: "users", label: "Usuarios", icon: <UserCog className="h-4 w-4" /> },
     { view: "processes", label: "Processos", icon: <ClipboardList className="h-4 w-4" /> },
     { view: "detail", label: "Detalhes", icon: <ListChecks className="h-4 w-4" /> },
     { view: "form", label: "Formulario", icon: <Settings className="h-4 w-4" /> },
@@ -827,6 +883,561 @@ function TrackingScreen({
   );
 }
 
+function VolunteerSubmissionsIndex({ token, filters }: { token: string; filters: TaskFilters }) {
+  const [submissions, setSubmissions] = useState<VolunteerSubmission[]>([]);
+  const [draftFilters, setDraftFilters] = useState<Record<string, string>>({});
+  const [activeFilters, setActiveFilters] = useState<Record<string, string>>({});
+  const [selectedSubmission, setSelectedSubmission] = useState<VolunteerSubmission | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+
+  async function refresh(nextFilters = activeFilters) {
+    setLoading(true);
+    setError("");
+    try {
+      const nextSubmissions = await listVolunteerSubmissions(token, nextFilters);
+      setSubmissions(nextSubmissions);
+      setSelectedSubmission((current) => (current ? nextSubmissions.find((item) => item.id === current.id) ?? null : nextSubmissions[0] ?? null));
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Nao foi possivel carregar inscricoes.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh({});
+  }, []);
+
+  function submitFilters(event: FormEvent) {
+    event.preventDefault();
+    setActiveFilters(draftFilters);
+    void refresh(draftFilters);
+  }
+
+  async function createLogin(submission: VolunteerSubmission) {
+    if (!submission.email) {
+      setError("A inscricao precisa de e-mail para criar login.");
+      return;
+    }
+    const password = window.prompt("Senha inicial do voluntario. Deixe em branco para gerar automaticamente.");
+    if (password === null) return;
+    try {
+      const result = await createVolunteerLogin(token, submission.id, password.trim() || undefined);
+      setNotice(result.temporary_password ? `${result.message} Senha temporaria: ${result.temporary_password}` : result.message);
+      setSelectedSubmission(result.volunteer);
+      await refresh();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Nao foi possivel criar login.");
+    }
+  }
+
+  async function rejectSubmission(submission: VolunteerSubmission) {
+    if (!window.confirm(`Reprovar a inscricao de ${submission.fullname || submission.name}?`)) return;
+    try {
+      const updated = await rejectVolunteerSubmission(token, submission.id);
+      setNotice("Inscricao reprovada.");
+      setSelectedSubmission(updated);
+      await refresh();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Nao foi possivel reprovar inscricao.");
+    }
+  }
+
+  const pendingCount = submissions.filter((item) => item.review_status === "PENDING").length;
+  const loginCount = submissions.filter((item) => item.review_status === "LOGIN_CREATED").length;
+  const rejectedCount = submissions.filter((item) => item.review_status === "REJECTED").length;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <StatCard label="Pendentes" value={pendingCount} icon={<FileText className="h-5 w-5" />} tone="warning" />
+        <StatCard label="Com login" value={loginCount} icon={<KeyRound className="h-5 w-5" />} tone="primary" />
+        <StatCard label="Reprovadas" value={rejectedCount} icon={<UserX className="h-5 w-5" />} tone="neutral" />
+      </div>
+
+      <Card className="p-4">
+        <form className="grid grid-cols-1 gap-3 md:grid-cols-3" onSubmit={submitFilters}>
+          <Select value={draftFilters.tenant_id ?? ""} onChange={(event) => setDraftFilters({ ...draftFilters, tenant_id: event.target.value })}>
+            <option value="">Todas as entidades</option>
+            {filters.tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
+          </Select>
+          <Select value={draftFilters.review_status ?? ""} onChange={(event) => setDraftFilters({ ...draftFilters, review_status: event.target.value })}>
+            <option value="">Todos os status</option>
+            {volunteerStatuses.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </Select>
+          <Button type="submit">
+            <Search className="h-4 w-4" />
+            Filtrar
+          </Button>
+        </form>
+      </Card>
+
+      {notice && <div className="rounded-lg border border-success/20 bg-success/10 px-4 py-3 text-sm text-success">{notice}</div>}
+      {error && <ErrorMessage title="Inscricoes de voluntarios" message={error} />}
+
+      {loading ? (
+        <Loading />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+          <DataTable
+            rowKey={(submission) => submission.id}
+            data={submissions}
+            onRowClick={(submission) => setSelectedSubmission(submission)}
+            columns={[
+              { key: "name", header: "Nome", className: "min-w-56", render: (submission) => <span className="font-medium">{submission.fullname || submission.name}</span> },
+              { key: "email", header: "E-mail", className: "min-w-60", render: (submission) => <span className="whitespace-nowrap text-muted-foreground">{submission.email || "-"}</span> },
+              { key: "tenant", header: "Entidade", className: "min-w-56", render: (submission) => submission.tenant_name ?? "-" },
+              { key: "status", header: "Status", className: "min-w-36", render: (submission) => <VolunteerStatusBadge status={submission.review_status} /> },
+              { key: "created", header: "Cadastro", className: "min-w-32", render: (submission) => formatDate(submission.created_at) },
+              {
+                key: "actions",
+                header: "Acoes",
+                className: "min-w-56",
+                render: (submission) => (
+                  <div className="flex flex-wrap gap-1.5" onClick={(event) => event.stopPropagation()}>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setSelectedSubmission(submission)} title="Visualizar dados">
+                      <Eye className="h-3.5 w-3.5" />
+                    </Button>
+                    {!submission.login_created && submission.review_status === "PENDING" && (
+                      <>
+                        <Button type="button" size="sm" onClick={() => createLogin(submission)} title="Criar login">
+                          <KeyRound className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button type="button" size="sm" variant="danger" onClick={() => rejectSubmission(submission)} title="Reprovar inscricao">
+                          <UserX className="h-3.5 w-3.5" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+            emptyMessage="Nenhuma inscricao de voluntario encontrada."
+          />
+
+          <VolunteerSubmissionPanel submission={selectedSubmission} onCreateLogin={createLogin} onReject={rejectSubmission} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VolunteerSubmissionPanel({
+  submission,
+  onCreateLogin,
+  onReject,
+}: {
+  submission: VolunteerSubmission | null;
+  onCreateLogin: (submission: VolunteerSubmission) => void;
+  onReject: (submission: VolunteerSubmission) => void;
+}) {
+  if (!submission) {
+    return (
+      <Card className="p-5">
+        <div className="flex h-full min-h-64 flex-col items-center justify-center text-center">
+          <FileText className="h-10 w-10 text-muted-foreground" />
+          <h2 className="mt-3 text-base font-semibold text-foreground">Dados do voluntario</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Selecione uma inscricao para revisar o formulario completo.</p>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="max-h-[calc(100vh-8rem)] overflow-y-auto p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">{submission.fullname || submission.name}</h2>
+          <p className="mt-1 break-all text-sm text-muted-foreground">{submission.email || "Sem e-mail informado"}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <VolunteerStatusBadge status={submission.review_status} />
+            <Badge tone={submission.login_created ? "success" : "neutral"}>{submission.login_created ? "login criado" : "sem login"}</Badge>
+          </div>
+        </div>
+        {!submission.login_created && submission.review_status === "PENDING" && (
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" onClick={() => onCreateLogin(submission)}>
+              <KeyRound className="h-3.5 w-3.5" />
+              Criar login
+            </Button>
+            <Button type="button" size="sm" variant="danger" onClick={() => onReject(submission)}>
+              <UserX className="h-3.5 w-3.5" />
+              Reprovar
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-5 space-y-5">
+        <DetailSection title="Dados pessoais">
+          <ProfileRow label="Nome ou apelido" value={submission.name} />
+          <ProfileRow label="Nome completo" value={submission.fullname || "-"} />
+          <ProfileRow label="Sexo" value={genderLabel(submission.gender)} />
+          <ProfileRow label="Nascimento" value={formatDate(submission.birthday)} />
+          <ProfileRow label="CPF" value={submission.legal_id || "-"} />
+          <ProfileRow label="Entidade" value={submission.tenant_name || "-"} />
+          <ProfileRow label="Data de cadastro" value={formatDate(submission.created_at)} />
+        </DetailSection>
+
+        <DetailSection title="Contato">
+          <ProfileRow label="E-mail" value={submission.email || "-"} />
+          <ListBlock
+            empty="Nenhum telefone informado."
+            items={submission.phones.map((phone) => `${phone.phone}${phone.whatsapp === "s" ? " - WhatsApp" : ""}`)}
+          />
+        </DetailSection>
+
+        <DetailSection title="Afinidades e habilidades">
+          <p className="whitespace-pre-wrap text-sm text-foreground">{submission.preferences || "-"}</p>
+        </DetailSection>
+
+        <DetailSection title="Formacao">
+          <ProfileRow label="Escolaridade" value={schoolingLabel(submission.schooling)} />
+          <ListBlock
+            empty="Nenhum curso informado."
+            items={submission.courses.map((course) => [course.level, course.area, course.course, course.conclusion].filter(Boolean).join(" - "))}
+          />
+        </DetailSection>
+
+        <DetailSection title="Experiencia profissional">
+          {submission.no_work ? (
+            <p className="text-sm text-muted-foreground">Informou que nao possui experiencia profissional.</p>
+          ) : (
+            <ListBlock
+              empty="Nenhuma experiencia profissional informada."
+              items={submission.work_experiences.map((item) => [item.area, item.period, item.duration, item.description].filter(Boolean).join(" - "))}
+            />
+          )}
+        </DetailSection>
+
+        <DetailSection title="Experiencia em voluntariado">
+          {submission.no_volunteer ? (
+            <p className="text-sm text-muted-foreground">Informou que nao possui experiencia em voluntariado.</p>
+          ) : (
+            <ListBlock
+              empty="Nenhuma experiencia em voluntariado informada."
+              items={submission.volunteer_experiences.map((item) => [item.period, item.duration, item.description].filter(Boolean).join(" - "))}
+            />
+          )}
+        </DetailSection>
+
+        <DetailSection title="Disponibilidade">
+          <ListBlock
+            empty="Nenhuma disponibilidade informada."
+            items={submission.availability.map((item) => [dayLabel(item.day_week), periodLabel(item.period), item.hours].filter(Boolean).join(" - "))}
+          />
+        </DetailSection>
+
+        <DetailSection title="Observacoes">
+          <p className="whitespace-pre-wrap text-sm text-foreground">{submission.comment || "-"}</p>
+        </DetailSection>
+      </div>
+    </Card>
+  );
+}
+
+function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-lg border border-border bg-muted/20 p-4">
+      <h3 className="mb-3 text-sm font-semibold text-foreground">{title}</h3>
+      <div className="space-y-3">{children}</div>
+    </section>
+  );
+}
+
+function ListBlock({ items, empty }: { items: string[]; empty: string }) {
+  const visibleItems = items.filter(Boolean);
+  if (visibleItems.length === 0) {
+    return <p className="text-sm text-muted-foreground">{empty}</p>;
+  }
+  return (
+    <ul className="space-y-2 text-sm text-foreground">
+      {visibleItems.map((item, index) => (
+        <li key={`${item}-${index}`} className="rounded-md bg-card px-3 py-2 shadow-sm shadow-foreground/5">{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+function UsersIndex({ token, filters }: { token: string; filters: TaskFilters }) {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [draftFilters, setDraftFilters] = useState<Record<string, string>>({});
+  const [activeFilters, setActiveFilters] = useState<Record<string, string>>({});
+  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
+  const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
+  const [editDraft, setEditDraft] = useState({ name: "", email: "", user_type: "VOLUNTEER" as AdminUserType, tenant_id: "", status: "ACTIVE" as UserAccountStatus });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+
+  async function refresh(nextFilters = activeFilters) {
+    setLoading(true);
+    setError("");
+    try {
+      const nextUsers = await listUsers(token, nextFilters);
+      setUsers(nextUsers);
+      setSelectedUser((current) => (current ? nextUsers.find((user) => user.id === current.id) ?? null : null));
+      setEditingUser((current) => (current ? nextUsers.find((user) => user.id === current.id) ?? null : null));
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Nao foi possivel carregar usuarios.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh({});
+  }, []);
+
+  function submitFilters(event: FormEvent) {
+    event.preventDefault();
+    setActiveFilters(draftFilters);
+    void refresh(draftFilters);
+  }
+
+  function openEdit(user: AdminUser) {
+    setEditingUser(user);
+    setEditDraft({
+      name: user.name,
+      email: user.email,
+      user_type: user.user_type,
+      tenant_id: user.tenant_id,
+      status: user.account_status,
+    });
+  }
+
+  async function runAction(user: AdminUser, action: "approve" | "reject" | "block" | "unblock" | "deactivate") {
+    const messages = {
+      approve: "Usuario aprovado e ativo.",
+      reject: "Usuario reprovado.",
+      block: "Acesso bloqueado.",
+      unblock: "Acesso desbloqueado.",
+      deactivate: "Usuario desativado.",
+    };
+    await userAction(token, user.id, action);
+    setNotice(messages[action]);
+    await refresh();
+  }
+
+  async function resendAccess(user: AdminUser) {
+    const result = await resendUserAccess(token, user.id);
+    setNotice(result.message);
+    await refresh();
+  }
+
+  async function saveEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!editingUser) return;
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await updateUser(token, editingUser.id, {
+        name: editDraft.name,
+        email: editDraft.email,
+        role: editDraft.user_type,
+        tenant_id: editDraft.tenant_id,
+        status: editDraft.status,
+      });
+      setNotice("Usuario atualizado.");
+      setSelectedUser(updated);
+      setEditingUser(null);
+      await refresh();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Nao foi possivel atualizar usuario.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const pendingCount = users.filter((user) => user.account_status === "PENDING").length;
+  const activeCount = users.filter((user) => user.account_status === "ACTIVE").length;
+  const restrictedCount = users.filter((user) => ["BLOCKED", "REJECTED", "INACTIVE"].includes(user.account_status)).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <StatCard label="Pendentes" value={pendingCount} icon={<UserCheck className="h-5 w-5" />} tone="warning" />
+        <StatCard label="Ativos" value={activeCount} icon={<ShieldCheck className="h-5 w-5" />} tone="primary" />
+        <StatCard label="Sem acesso" value={restrictedCount} icon={<Ban className="h-5 w-5" />} tone="neutral" />
+      </div>
+
+      <Card className="p-4">
+        <form className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-5" onSubmit={submitFilters}>
+          <Select value={draftFilters.user_type ?? ""} onChange={(event) => setDraftFilters({ ...draftFilters, user_type: event.target.value })}>
+            <option value="">Todos os tipos</option>
+            {userTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </Select>
+          <Select value={draftFilters.origin ?? ""} onChange={(event) => setDraftFilters({ ...draftFilters, origin: event.target.value })}>
+            <option value="">Todas as origens</option>
+            {userOrigins.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </Select>
+          <Select value={draftFilters.tenant_id ?? ""} onChange={(event) => setDraftFilters({ ...draftFilters, tenant_id: event.target.value })}>
+            <option value="">Todas as entidades</option>
+            {filters.tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
+          </Select>
+          <Select value={draftFilters.status ?? ""} onChange={(event) => setDraftFilters({ ...draftFilters, status: event.target.value })}>
+            <option value="">Todos os status</option>
+            {userStatuses.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </Select>
+          <Button type="submit">
+            <Search className="h-4 w-4" />
+            Filtrar
+          </Button>
+        </form>
+      </Card>
+
+      {notice && <div className="rounded-lg border border-success/20 bg-success/10 px-4 py-3 text-sm text-success">{notice}</div>}
+      {error && <ErrorMessage title="Usuarios" message={error} />}
+
+      {loading ? (
+        <Loading />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <DataTable
+            rowKey={(user) => user.id}
+            data={users}
+            onRowClick={(user) => setSelectedUser(user)}
+            columns={[
+              { key: "name", header: "Nome", className: "min-w-44", render: (user) => <span className="font-medium">{user.name}</span> },
+              { key: "email", header: "E-mail", className: "min-w-60", render: (user) => <span className="whitespace-nowrap text-muted-foreground">{user.email}</span> },
+              { key: "type", header: "Tipo de usuario", className: "min-w-48", render: (user) => <UserTypeBadge user={user} /> },
+              { key: "origin", header: "Origem", render: (user) => <Badge tone={user.origin === "VOLUNTEER" ? "info" : "neutral"}>{user.origin_label}</Badge> },
+              { key: "tenant", header: "Entidade vinculada", className: "min-w-56", render: (user) => user.tenant_name ?? "-" },
+              { key: "status", header: "Status da conta", className: "min-w-40", render: (user) => <UserStatusBadge status={user.account_status} /> },
+              { key: "created", header: "Data de cadastro", className: "min-w-40", render: (user) => formatDate(user.created_at) },
+              {
+                key: "actions",
+                header: "Acoes",
+                className: "min-w-64",
+                render: (user) => (
+                  <div className="flex flex-wrap gap-1.5" onClick={(event) => event.stopPropagation()}>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setSelectedUser(user)} title="Visualizar perfil">
+                      <Eye className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={() => openEdit(user)} title="Editar usuario">
+                      <Edit3 className="h-3.5 w-3.5" />
+                    </Button>
+                    {user.account_status === "PENDING" && (
+                      <>
+                        <Button type="button" size="sm" onClick={() => runAction(user, "approve")} title="Aprovar voluntario">
+                          <UserCheck className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button type="button" size="sm" variant="danger" onClick={() => runAction(user, "reject")} title="Reprovar voluntario">
+                          <UserX className="h-3.5 w-3.5" />
+                        </Button>
+                      </>
+                    )}
+                    {user.account_status === "BLOCKED" ? (
+                      <Button type="button" size="sm" variant="outline" onClick={() => runAction(user, "unblock")} title="Desbloquear acesso">
+                        <ShieldCheck className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : (
+                      <Button type="button" size="sm" variant="outline" onClick={() => runAction(user, "block")} title="Bloquear acesso">
+                        <Ban className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    <Button type="button" size="sm" variant="outline" onClick={() => runAction(user, "deactivate")} title="Desativar usuario">
+                      <UserX className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={() => resendAccess(user)} title="Reenviar convite ou instrucoes">
+                      <Send className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ),
+              },
+            ]}
+          />
+
+          <UserProfilePanel user={selectedUser} onEdit={openEdit} />
+        </div>
+      )}
+
+      {editingUser && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-foreground/40 p-4" onClick={() => setEditingUser(null)}>
+          <form className="w-full max-w-xl rounded-xl border border-border bg-card p-5 shadow-2xl shadow-foreground/20" onSubmit={saveEdit} onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-foreground">Editar usuario</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{editingUser.email}</p>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setEditingUser(null)}>Fechar</Button>
+            </div>
+            <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <Input label="Nome" value={editDraft.name} onChange={(event) => setEditDraft({ ...editDraft, name: event.target.value })} required />
+              <Input label="E-mail" type="email" value={editDraft.email} onChange={(event) => setEditDraft({ ...editDraft, email: event.target.value })} required />
+              <Select label="Tipo de usuario" value={editDraft.user_type} onChange={(event) => setEditDraft({ ...editDraft, user_type: event.target.value as AdminUserType })}>
+                {userTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </Select>
+              <Select label="Entidade vinculada" value={editDraft.tenant_id} onChange={(event) => setEditDraft({ ...editDraft, tenant_id: event.target.value })}>
+                {filters.tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
+              </Select>
+              <Select label="Status da conta" value={editDraft.status} onChange={(event) => setEditDraft({ ...editDraft, status: event.target.value as UserAccountStatus })}>
+                {userStatuses.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </Select>
+            </div>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setEditingUser(null)}>Cancelar</Button>
+              <Button loading={saving}>
+                <Save className="h-4 w-4" />
+                Salvar
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserProfilePanel({ user, onEdit }: { user: AdminUser | null; onEdit: (user: AdminUser) => void }) {
+  if (!user) {
+    return (
+      <Card className="p-5">
+        <div className="flex h-full min-h-64 flex-col items-center justify-center text-center">
+          <UserCircle className="h-10 w-10 text-muted-foreground" />
+          <h2 className="mt-3 text-base font-semibold text-foreground">Perfil do usuario</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Selecione uma linha para visualizar os detalhes.</p>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">{user.name}</h2>
+          <p className="mt-1 break-all text-sm text-muted-foreground">{user.email}</p>
+        </div>
+        <Button type="button" size="sm" variant="outline" onClick={() => onEdit(user)}>
+          <Edit3 className="h-3.5 w-3.5" />
+          Editar
+        </Button>
+      </div>
+      <div className="mt-5 space-y-3 text-sm">
+        <ProfileRow label="Tipo" value={<UserTypeBadge user={user} />} />
+        <ProfileRow label="Origem" value={user.origin_label} />
+        <ProfileRow label="Entidade" value={user.tenant_name ?? "-"} />
+        <ProfileRow label="Status" value={<UserStatusBadge status={user.account_status} />} />
+        <ProfileRow label="Cadastro" value={formatDate(user.created_at)} />
+        <ProfileRow label="Perfil de voluntario" value={user.volunteer_id ? "Vinculado" : "Nao vinculado"} />
+      </div>
+    </Card>
+  );
+}
+
+function ProfileRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-border pb-3 last:border-b-0 last:pb-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right font-medium text-foreground">{value}</span>
+    </div>
+  );
+}
+
 function CollaboratorTasks({ token, user, onLogout }: { token: string; user: SessionUser; onLogout: () => void }) {
   const [tasks, setTasks] = useState<ProcessTask[]>([]);
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -1128,6 +1739,36 @@ function TaskStatusBadge({ status }: { status: TaskStatus }) {
   return <Badge tone={tone[status]}>{statusLabel(status)}</Badge>;
 }
 
+function UserStatusBadge({ status }: { status: UserAccountStatus }) {
+  const tone: Record<UserAccountStatus, "success" | "danger" | "info" | "warning" | "neutral" | "primary"> = {
+    PENDING: "warning",
+    ACTIVE: "success",
+    BLOCKED: "danger",
+    REJECTED: "danger",
+    INACTIVE: "neutral",
+  };
+  return <Badge tone={tone[status]}>{userStatusLabel(status)}</Badge>;
+}
+
+function VolunteerStatusBadge({ status }: { status: VolunteerReviewStatus }) {
+  const tone: Record<VolunteerReviewStatus, "success" | "danger" | "info" | "warning" | "neutral" | "primary"> = {
+    PENDING: "warning",
+    LOGIN_CREATED: "success",
+    REJECTED: "danger",
+    ARCHIVED: "neutral",
+  };
+  return <Badge tone={tone[status]}>{volunteerStatusLabel(status)}</Badge>;
+}
+
+function UserTypeBadge({ user }: { user: AdminUser }) {
+  const tone: Record<AdminUserType, "success" | "danger" | "info" | "warning" | "neutral" | "primary"> = {
+    GENERAL_ADMIN: "primary",
+    ENTITY_ADMIN: "info",
+    VOLUNTEER: "neutral",
+  };
+  return <Badge tone={tone[user.user_type]}>{user.user_type_label}</Badge>;
+}
+
 function PriorityBadge({ priority }: { priority: TaskPriority }) {
   const tone: Record<TaskPriority, "success" | "danger" | "info" | "warning" | "neutral" | "primary"> = {
     URGENT: "danger",
@@ -1160,6 +1801,14 @@ function statusLabel(status: TaskStatus) {
   return statuses.find((item) => item.value === status)?.label ?? status;
 }
 
+function userStatusLabel(status: UserAccountStatus) {
+  return userStatuses.find((item) => item.value === status)?.label ?? status;
+}
+
+function volunteerStatusLabel(status: VolunteerReviewStatus) {
+  return volunteerStatuses.find((item) => item.value === status)?.label ?? status;
+}
+
 function priorityLabel(priority: TaskPriority) {
   return priorities.find((item) => item.value === priority)?.label ?? priority;
 }
@@ -1176,6 +1825,32 @@ function formatDate(value?: string | null) {
   return new Date(value).toLocaleDateString("pt-BR");
 }
 
+function genderLabel(value?: string | null) {
+  if (value === "f") return "Feminino";
+  if (value === "m") return "Masculino";
+  return "-";
+}
+
+function schoolingLabel(value?: number | null) {
+  const labels: Record<number, string> = {
+    1: "Alfabetizado",
+    2: "Ensino medio incompleto",
+    3: "Ensino medio completo",
+    4: "Tecnico ou superior",
+  };
+  return value ? labels[value] ?? "-" : "-";
+}
+
+function dayLabel(value?: string | null) {
+  const labels: Record<string, string> = { seg: "Seg", ter: "Ter", qua: "Qua", qui: "Qui", sex: "Sex", sab: "Sab", dom: "Dom" };
+  return value ? labels[value] ?? value : "";
+}
+
+function periodLabel(value?: string | null) {
+  const labels: Record<string, string> = { m: "Manha", t: "Tarde", n: "Noite" };
+  return value ? labels[value] ?? value : "";
+}
+
 function tenantLabel(user: SessionUser, filters: TaskFilters) {
   return filters.tenants.find((tenant) => tenant.id === user.tenant_id)?.name ?? "Rede Voluntariado";
 }
@@ -1183,6 +1858,8 @@ function tenantLabel(user: SessionUser, filters: TaskFilters) {
 function pageTitle(view: AdminView) {
   const labels: Record<AdminView, string> = {
     dashboard: "Dashboard",
+    volunteers: "Voluntarios",
+    users: "Indice de Usuarios",
     processes: "Processos",
     detail: "Detalhes do processo",
     form: "Formulario de processo",
@@ -1194,6 +1871,8 @@ function pageTitle(view: AdminView) {
 function pageDescription(view: AdminView) {
   const labels: Record<AdminView, string> = {
     dashboard: "Visao geral das tarefas sequenciais no escopo da sua entidade.",
+    volunteers: "Analise os formularios recebidos e crie login apenas quando fizer sentido.",
+    users: "Controle de origem, perfil, entidade vinculada e aprovacao de acessos.",
     processes: "Tarefas matriz cadastradas, ordenadas por prioridade.",
     detail: "Linha do tempo completa, incluindo etapas bloqueadas e concluidas.",
     form: "Crie, edite e reorganize etapas obrigatorias do fluxo.",

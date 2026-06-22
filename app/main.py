@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings
@@ -16,15 +16,19 @@ from app.models import (
     TaskProcess,
     TaskStatus,
     User,
+    UserAccountStatus,
+    UserOrigin,
     UserRole,
     Volunteer,
     VolunteerAvailability,
     VolunteerCourse,
     VolunteerExperience,
     VolunteerPhone,
+    VolunteerReviewStatus,
     VolunteerWork,
 )
 from app.schemas import (
+    AdminVolunteerOut,
     LoginInput,
     ProcessTaskComplete,
     ProcessTaskInput,
@@ -38,9 +42,14 @@ from app.schemas import (
     TaskProcessUpdate,
     TaskSummaryOut,
     TokenOut,
+    AdminUserOut,
+    UserActionOut,
     UserCreate,
     UserOut,
+    UserUpdate,
     VolunteerCreate,
+    VolunteerLoginCreate,
+    VolunteerLoginOut,
     VolunteerOut,
     VolunteerRegister,
 )
@@ -61,7 +70,16 @@ app.add_middleware(
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
     with next(get_db()) as db:
+        ensure_user_account_columns(db)
         seed_defaults(db)
+
+
+def ensure_user_account_columns(db: Session) -> None:
+    db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS origin VARCHAR(32) NOT NULL DEFAULT 'ADMINISTRATOR'"))
+    db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS account_status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'"))
+    db.execute(text("ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING'"))
+    db.execute(text("UPDATE users SET account_status = 'INACTIVE' WHERE active = false AND account_status = 'ACTIVE'"))
+    db.commit()
 
 
 def seed_defaults(db: Session) -> None:
@@ -94,6 +112,8 @@ def seed_defaults(db: Session) -> None:
                     email=settings.seed_admin_email,
                     password_hash=hash_password(settings.seed_admin_password),
                     role=UserRole.ADMIN,
+                    origin=UserOrigin.ADMINISTRATOR,
+                    account_status=UserAccountStatus.ACTIVE,
                 )
             )
 
@@ -112,6 +132,8 @@ def seed_task_demo(db: Session, presbiterianos: Tenant) -> None:
             email="colaborador@presbiterianos.sco.org.br",
             password_hash=hash_password("voluntario123"),
             role=UserRole.VOLUNTEER,
+            origin=UserOrigin.ADMINISTRATOR,
+            account_status=UserAccountStatus.ACTIVE,
         )
         db.add(collaborator)
         db.flush()
@@ -127,6 +149,8 @@ def seed_task_demo(db: Session, presbiterianos: Tenant) -> None:
                 email="admin@presbiterianos.sco.org.br",
                 password_hash=hash_password("admin123"),
                 role=UserRole.ADMIN,
+                origin=UserOrigin.ADMINISTRATOR,
+                account_status=UserAccountStatus.ACTIVE,
             )
         )
 
@@ -170,11 +194,162 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def parse_user_role(value: str | None) -> UserRole:
+    if value in {"ADMIN", "GENERAL_ADMIN", "ENTITY_ADMIN"}:
+        return UserRole.ADMIN
+    return UserRole.VOLUNTEER
+
+
+def parse_account_status(value: str | None) -> UserAccountStatus | None:
+    if value is None:
+        return None
+    try:
+        return UserAccountStatus(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Status de usuario invalido.") from exc
+
+
+def user_type(user: User) -> str:
+    if user.role == UserRole.ADMIN and user.tenant and user.tenant.is_main:
+        return "GENERAL_ADMIN"
+    if user.role == UserRole.ADMIN:
+        return "ENTITY_ADMIN"
+    return "VOLUNTEER"
+
+
+def user_type_label(user: User) -> str:
+    labels = {
+        "GENERAL_ADMIN": "Administrador Geral",
+        "ENTITY_ADMIN": "Administrador da Entidade",
+        "VOLUNTEER": "Voluntario",
+    }
+    return labels[user_type(user)]
+
+
+def origin_label(origin: str) -> str:
+    labels = {
+        UserOrigin.ADMINISTRATOR.value: "administrador",
+        UserOrigin.VOLUNTEER.value: "voluntario",
+    }
+    return labels.get(origin, origin.lower())
+
+
+def status_label(account_status: str) -> str:
+    labels = {
+        UserAccountStatus.PENDING.value: "pendente",
+        UserAccountStatus.ACTIVE.value: "ativo",
+        UserAccountStatus.BLOCKED.value: "bloqueado",
+        UserAccountStatus.REJECTED.value: "reprovado",
+        UserAccountStatus.INACTIVE.value: "inativo",
+    }
+    return labels.get(account_status, account_status.lower())
+
+
+def serialize_admin_user(user: User) -> AdminUserOut:
+    return AdminUserOut(
+        id=user.id,
+        tenant_id=user.tenant_id,
+        name=user.name,
+        email=user.email,
+        role=user.role.value,
+        origin=user.origin,
+        account_status=user.account_status,
+        active=user.active,
+        created_at=user.created_at,
+        user_type=user_type(user),
+        user_type_label=user_type_label(user),
+        origin_label=origin_label(user.origin),
+        status_label=status_label(user.account_status),
+        tenant_name=user.tenant.name if user.tenant else None,
+        volunteer_id=user.volunteer.id if user.volunteer else None,
+    )
+
+
+def get_user_in_scope(user_id: str, current_user: User, db: Session) -> User:
+    user = db.scalars(
+        select(User)
+        .where(User.id == user_id)
+        .options(selectinload(User.tenant), selectinload(User.volunteer))
+    ).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario nao encontrado.")
+    if not can_access_tenant(current_user, user.tenant_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario fora do seu escopo.")
+    return user
+
+
+def apply_user_status(user: User, next_status: UserAccountStatus) -> None:
+    user.account_status = next_status.value
+    user.active = next_status == UserAccountStatus.ACTIVE
+
+
+def volunteer_review_label(review_status: str) -> str:
+    labels = {
+        VolunteerReviewStatus.PENDING.value: "pendente",
+        VolunteerReviewStatus.LOGIN_CREATED.value: "login criado",
+        VolunteerReviewStatus.REJECTED.value: "reprovado",
+        VolunteerReviewStatus.ARCHIVED.value: "arquivado",
+    }
+    return labels.get(review_status, review_status.lower())
+
+
+def volunteer_detail_options():
+    return (
+        selectinload(Volunteer.tenant),
+        selectinload(Volunteer.user),
+        selectinload(Volunteer.phones),
+        selectinload(Volunteer.courses),
+        selectinload(Volunteer.work_experiences),
+        selectinload(Volunteer.volunteer_experiences),
+        selectinload(Volunteer.availability),
+    )
+
+
+def serialize_admin_volunteer(volunteer: Volunteer) -> AdminVolunteerOut:
+    return AdminVolunteerOut(
+        id=volunteer.id,
+        tenant_id=volunteer.tenant_id,
+        name=volunteer.name,
+        gender=volunteer.gender,
+        fullname=volunteer.fullname,
+        birthday=volunteer.birthday,
+        legal_id=volunteer.legal_id,
+        email=volunteer.email,
+        preferences=volunteer.preferences,
+        comment=volunteer.comment,
+        schooling=volunteer.schooling,
+        no_volunteer=volunteer.no_volunteer,
+        no_work=volunteer.no_work,
+        review_status=volunteer.review_status,
+        created_at=volunteer.created_at,
+        tenant_name=volunteer.tenant.name if volunteer.tenant else None,
+        user_email=volunteer.user.email if volunteer.user else None,
+        login_created=volunteer.user_id is not None,
+        status_label=volunteer_review_label(volunteer.review_status),
+        phones=list(volunteer.phones),
+        courses=list(volunteer.courses),
+        work_experiences=list(volunteer.work_experiences),
+        volunteer_experiences=list(volunteer.volunteer_experiences),
+        availability=list(volunteer.availability),
+    )
+
+
+def get_volunteer_submission_in_scope(volunteer_id: str, current_user: User, db: Session) -> Volunteer:
+    volunteer = db.scalars(select(Volunteer).where(Volunteer.id == volunteer_id).options(*volunteer_detail_options())).first()
+    if not volunteer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inscricao de voluntario nao encontrada.")
+    if not can_access_tenant(current_user, volunteer.tenant_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inscricao fora do seu escopo.")
+    return volunteer
+
+
 @app.post("/auth/login", response_model=TokenOut)
 def login(payload: LoginInput, tenant: TenantContext, db: Annotated[Session, Depends(get_db)]) -> TokenOut:
     user = db.scalars(select(User).where(User.tenant_id == tenant.id, User.email == payload.email)).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="E-mail ou senha invalidos.")
+    if not user.active or user.account_status != UserAccountStatus.ACTIVE:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conta pendente, bloqueada ou inativa.")
 
     return TokenOut(access_token=create_access_token(user))
 
@@ -196,6 +371,9 @@ def register_volunteer_user(payload: VolunteerRegister, tenant: TenantContext, d
         email=payload.email,
         password_hash=hash_password(payload.password),
         role=UserRole.VOLUNTEER,
+        origin=UserOrigin.VOLUNTEER,
+        account_status=UserAccountStatus.PENDING,
+        active=False,
     )
     db.add(user)
     db.commit()
@@ -211,25 +389,148 @@ def create_user(
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
     ensure_admin(current_user)
-    if not can_access_tenant(current_user, tenant.id):
+    target_tenant_id = scoped_tenant_id(current_user, payload.tenant_id or tenant.id)
+    if not can_access_tenant(current_user, target_tenant_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant fora do seu escopo.")
 
-    role = UserRole.ADMIN if payload.role == "ADMIN" else UserRole.VOLUNTEER
-    exists = db.scalars(select(User).where(User.tenant_id == tenant.id, User.email == payload.email)).first()
+    role = parse_user_role(payload.role)
+    exists = db.scalars(select(User).where(User.tenant_id == target_tenant_id, User.email == payload.email)).first()
     if exists:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="E-mail ja cadastrado neste tenant.")
 
     user = User(
-        tenant_id=tenant.id,
+        tenant_id=target_tenant_id,
         name=payload.name,
         email=payload.email,
         password_hash=hash_password(payload.password),
         role=role,
+        origin=UserOrigin.ADMINISTRATOR,
+        account_status=UserAccountStatus.ACTIVE,
+        active=True,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
+
+
+@app.get("/users", response_model=list[AdminUserOut])
+def list_users(
+    current_user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    user_type_filter: Annotated[str | None, Query(alias="user_type")] = None,
+    origin: Annotated[str | None, Query()] = None,
+    tenant_id: Annotated[uuid.UUID | None, Query()] = None,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+) -> list[AdminUserOut]:
+    ensure_admin(current_user)
+    statement = select(User).options(selectinload(User.tenant), selectinload(User.volunteer)).order_by(User.created_at.desc())
+    if current_user.tenant and current_user.tenant.is_main:
+        if tenant_id:
+            statement = statement.where(User.tenant_id == tenant_id)
+    else:
+        statement = statement.where(User.tenant_id == current_user.tenant_id)
+    if origin:
+        statement = statement.where(User.origin == origin)
+    if status_filter:
+        statement = statement.where(User.account_status == parse_account_status(status_filter).value)
+
+    users = list(db.scalars(statement))
+    if user_type_filter:
+        users = [user for user in users if user_type(user) == user_type_filter]
+    return [serialize_admin_user(user) for user in users]
+
+
+@app.get("/users/{user_id}", response_model=AdminUserOut)
+def get_user(user_id: str, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> AdminUserOut:
+    ensure_admin(current_user)
+    return serialize_admin_user(get_user_in_scope(user_id, current_user, db))
+
+
+@app.put("/users/{user_id}", response_model=AdminUserOut)
+def update_user(user_id: str, payload: UserUpdate, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> AdminUserOut:
+    ensure_admin(current_user)
+    user = get_user_in_scope(user_id, current_user, db)
+    data = payload.model_dump(exclude_unset=True)
+    target_tenant_id = user.tenant_id
+    if "tenant_id" in data and data["tenant_id"]:
+        if not current_user.tenant or not current_user.tenant.is_main:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrador da entidade nao altera vinculo de entidade.")
+        target_tenant_id = data["tenant_id"]
+        tenant = db.get(Tenant, target_tenant_id)
+        if not tenant:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Entidade invalida.")
+        user.tenant_id = target_tenant_id
+    if "email" in data and data["email"]:
+        exists = db.scalars(select(User).where(User.tenant_id == target_tenant_id, User.email == str(data["email"]), User.id != user.id)).first()
+        if exists:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="E-mail ja cadastrado nesta entidade.")
+        user.email = str(data["email"])
+    if "name" in data and data["name"]:
+        user.name = data["name"]
+    if "role" in data and data["role"]:
+        next_role = parse_user_role(data["role"])
+        if next_role == UserRole.ADMIN and (not current_user.tenant or not current_user.tenant.is_main) and target_tenant_id != current_user.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Perfil administrativo fora do seu escopo.")
+        user.role = next_role
+    if "status" in data:
+        next_status = parse_account_status(data["status"])
+        if next_status:
+            apply_user_status(user, next_status)
+    db.commit()
+    return serialize_admin_user(get_user_in_scope(user_id, current_user, db))
+
+
+@app.post("/users/{user_id}/approve", response_model=AdminUserOut)
+def approve_user(user_id: str, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> AdminUserOut:
+    ensure_admin(current_user)
+    user = get_user_in_scope(user_id, current_user, db)
+    apply_user_status(user, UserAccountStatus.ACTIVE)
+    db.commit()
+    return serialize_admin_user(get_user_in_scope(user_id, current_user, db))
+
+
+@app.post("/users/{user_id}/reject", response_model=AdminUserOut)
+def reject_user(user_id: str, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> AdminUserOut:
+    ensure_admin(current_user)
+    user = get_user_in_scope(user_id, current_user, db)
+    apply_user_status(user, UserAccountStatus.REJECTED)
+    db.commit()
+    return serialize_admin_user(get_user_in_scope(user_id, current_user, db))
+
+
+@app.post("/users/{user_id}/block", response_model=AdminUserOut)
+def block_user(user_id: str, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> AdminUserOut:
+    ensure_admin(current_user)
+    user = get_user_in_scope(user_id, current_user, db)
+    apply_user_status(user, UserAccountStatus.BLOCKED)
+    db.commit()
+    return serialize_admin_user(get_user_in_scope(user_id, current_user, db))
+
+
+@app.post("/users/{user_id}/unblock", response_model=AdminUserOut)
+def unblock_user(user_id: str, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> AdminUserOut:
+    ensure_admin(current_user)
+    user = get_user_in_scope(user_id, current_user, db)
+    apply_user_status(user, UserAccountStatus.ACTIVE)
+    db.commit()
+    return serialize_admin_user(get_user_in_scope(user_id, current_user, db))
+
+
+@app.post("/users/{user_id}/deactivate", response_model=AdminUserOut)
+def deactivate_user(user_id: str, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> AdminUserOut:
+    ensure_admin(current_user)
+    user = get_user_in_scope(user_id, current_user, db)
+    apply_user_status(user, UserAccountStatus.INACTIVE)
+    db.commit()
+    return serialize_admin_user(get_user_in_scope(user_id, current_user, db))
+
+
+@app.post("/users/{user_id}/resend-access", response_model=UserActionOut)
+def resend_user_access(user_id: str, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> UserActionOut:
+    ensure_admin(current_user)
+    user = get_user_in_scope(user_id, current_user, db)
+    return UserActionOut(message=f"Instrucoes de acesso preparadas para {user.email}.", user=serialize_admin_user(user))
 
 
 @app.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
@@ -268,6 +569,7 @@ def create_volunteer(payload: VolunteerCreate, tenant: TenantContext, db: Annota
         schooling=payload.schooling,
         no_volunteer=payload.no_volunteer,
         no_work=payload.no_work,
+        review_status=VolunteerReviewStatus.PENDING.value,
     )
     db.add(volunteer)
     db.flush()
@@ -357,6 +659,87 @@ def list_volunteers(
         statement = statement.where(Volunteer.tenant_id == current_user.tenant_id)
 
     return list(db.scalars(statement))
+
+
+@app.get("/volunteer-submissions", response_model=list[AdminVolunteerOut])
+def list_volunteer_submissions(
+    current_user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    tenant_id: Annotated[uuid.UUID | None, Query()] = None,
+    review_status: Annotated[str | None, Query()] = None,
+) -> list[AdminVolunteerOut]:
+    ensure_admin(current_user)
+    statement = select(Volunteer).options(*volunteer_detail_options()).order_by(Volunteer.created_at.desc())
+    if current_user.tenant and current_user.tenant.is_main:
+        if tenant_id:
+            statement = statement.where(Volunteer.tenant_id == tenant_id)
+    else:
+        statement = statement.where(Volunteer.tenant_id == current_user.tenant_id)
+    if review_status:
+        statement = statement.where(Volunteer.review_status == review_status)
+    return [serialize_admin_volunteer(volunteer) for volunteer in db.scalars(statement)]
+
+
+@app.get("/volunteer-submissions/{volunteer_id}", response_model=AdminVolunteerOut)
+def get_volunteer_submission(volunteer_id: str, current_user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> AdminVolunteerOut:
+    ensure_admin(current_user)
+    return serialize_admin_volunteer(get_volunteer_submission_in_scope(volunteer_id, current_user, db))
+
+
+@app.post("/volunteer-submissions/{volunteer_id}/create-login", response_model=VolunteerLoginOut)
+def create_volunteer_login(
+    volunteer_id: str,
+    payload: VolunteerLoginCreate,
+    current_user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+) -> VolunteerLoginOut:
+    ensure_admin(current_user)
+    volunteer = get_volunteer_submission_in_scope(volunteer_id, current_user, db)
+    if volunteer.user_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Esta inscricao ja possui login vinculado.")
+    if not volunteer.email:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A inscricao precisa de e-mail para criar login.")
+    exists = db.scalars(select(User).where(User.tenant_id == volunteer.tenant_id, User.email == volunteer.email)).first()
+    if exists:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ja existe usuario com este e-mail nesta entidade.")
+
+    temporary_password = payload.password or uuid.uuid4().hex[:12]
+    user = User(
+        tenant_id=volunteer.tenant_id,
+        name=volunteer.fullname or volunteer.name,
+        email=volunteer.email,
+        password_hash=hash_password(temporary_password),
+        role=UserRole.VOLUNTEER,
+        origin=UserOrigin.VOLUNTEER,
+        account_status=UserAccountStatus.ACTIVE,
+        active=True,
+    )
+    db.add(user)
+    db.flush()
+    volunteer.user_id = user.id
+    volunteer.review_status = VolunteerReviewStatus.LOGIN_CREATED.value
+    db.commit()
+    volunteer = get_volunteer_submission_in_scope(volunteer_id, current_user, db)
+    return VolunteerLoginOut(
+        message=f"Login criado para {volunteer.email}.",
+        temporary_password=None if payload.password else temporary_password,
+        volunteer=serialize_admin_volunteer(volunteer),
+    )
+
+
+@app.post("/volunteer-submissions/{volunteer_id}/reject", response_model=AdminVolunteerOut)
+def reject_volunteer_submission(
+    volunteer_id: str,
+    current_user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+) -> AdminVolunteerOut:
+    ensure_admin(current_user)
+    volunteer = get_volunteer_submission_in_scope(volunteer_id, current_user, db)
+    if volunteer.user_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Inscricao com login criado nao pode ser reprovada.")
+    volunteer.review_status = VolunteerReviewStatus.REJECTED.value
+    db.commit()
+    return serialize_admin_volunteer(get_volunteer_submission_in_scope(volunteer_id, current_user, db))
 
 
 @app.get("/volunteers/{volunteer_id}", response_model=VolunteerOut)
