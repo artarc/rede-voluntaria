@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -12,6 +12,21 @@ from app.database import Base
 class UserRole(str, enum.Enum):
     ADMIN = "ADMIN"
     VOLUNTEER = "VOLUNTEER"
+
+
+class TaskPriority(str, enum.Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
+
+
+class TaskStatus(str, enum.Enum):
+    BLOCKED = "BLOCKED"
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    CANCELED = "CANCELED"
 
 
 class Tenant(Base):
@@ -27,6 +42,7 @@ class Tenant(Base):
 
     users: Mapped[list["User"]] = relationship(back_populates="tenant")
     volunteers: Mapped[list["Volunteer"]] = relationship(back_populates="tenant")
+    task_processes: Mapped[list["TaskProcess"]] = relationship(back_populates="tenant")
 
 
 class User(Base):
@@ -47,6 +63,14 @@ class User(Base):
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
     volunteer: Mapped["Volunteer | None"] = relationship(back_populates="user")
+    assigned_tasks: Mapped[list["ProcessTask"]] = relationship(
+        back_populates="assignee",
+        foreign_keys="ProcessTask.assignee_user_id",
+    )
+    completed_tasks: Mapped[list["ProcessTask"]] = relationship(
+        back_populates="completed_by",
+        foreign_keys="ProcessTask.completed_by_id",
+    )
 
 
 class Volunteer(Base):
@@ -152,3 +176,56 @@ class VolunteerAvailability(Base):
     hours: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     volunteer: Mapped[Volunteer] = relationship(back_populates="availability")
+
+
+class TaskProcess(Base):
+    __tablename__ = "task_processes"
+    __table_args__ = (
+        Index("task_processes_tenant_status_idx", "tenant_id", "status"),
+        Index("task_processes_priority_created_idx", "priority", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    priority: Mapped[TaskPriority] = mapped_column(Enum(TaskPriority), nullable=False, default=TaskPriority.MEDIUM)
+    status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), nullable=False, default=TaskStatus.PENDING)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    tenant: Mapped[Tenant] = relationship(back_populates="task_processes")
+    tasks: Mapped[list["ProcessTask"]] = relationship(
+        cascade="all, delete-orphan",
+        order_by="ProcessTask.step_order",
+        back_populates="process",
+    )
+
+
+class ProcessTask(Base):
+    __tablename__ = "process_tasks"
+    __table_args__ = (
+        UniqueConstraint("process_id", "step_order", name="process_tasks_process_order_unique"),
+        Index("process_tasks_tenant_status_due_idx", "tenant_id", "status", "due_date"),
+        Index("process_tasks_assignee_status_idx", "assignee_user_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    process_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("task_processes.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    priority: Mapped[TaskPriority] = mapped_column(Enum(TaskPriority), nullable=False, default=TaskPriority.MEDIUM)
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), nullable=False, default=TaskStatus.BLOCKED)
+    assignee_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    completion_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    process: Mapped[TaskProcess] = relationship(back_populates="tasks")
+    assignee: Mapped[User | None] = relationship(back_populates="assigned_tasks", foreign_keys=[assignee_user_id])
+    completed_by: Mapped[User | None] = relationship(back_populates="completed_tasks", foreign_keys=[completed_by_id])
