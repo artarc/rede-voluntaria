@@ -18,6 +18,7 @@ import {
 import { useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { createVolunteer, listVolunteers, login, VolunteerPayload } from "./api";
+import { AdminTasksArea } from "./AdminTasks";
 
 type Page = "home" | "presbiterianos" | "cadastro" | "admin";
 
@@ -76,12 +77,12 @@ export function App() {
 
   return (
     <div className="app">
-      <Header page={page} onNavigate={setPage} />
+      {page !== "admin" && <Header page={page} onNavigate={setPage} />}
       {page === "home" && <HomePage onNavigate={setPage} />}
       {page === "presbiterianos" && <TenantPage onNavigate={setPage} />}
       {page === "cadastro" && <VolunteerForm />}
       {page === "admin" && <AdminPage />}
-      <Footer />
+      {page !== "admin" && <Footer />}
     </div>
   );
 }
@@ -143,11 +144,11 @@ function HomePage({ onNavigate }: { onNavigate: (page: Page) => void }) {
           <h2>Uma rede para organizar voluntariado com responsabilidade</h2>
           <p>
             O portal antigo mostrou uma Rede centrada em conexao, historico institucional e integracao com organizacoes.
-            Esta nova interface preserva esse papel e liga cada dominio a um tenant separado.
+            Esta nova interface preserva esse papel e liga cada dominio a uma entidade separada.
           </p>
           <div className="feature-list">
             <Feature icon={<Building2 />} title="Instituicoes" text="Cada grupo tem identidade propria, dominio e base de voluntarios isolada." />
-            <Feature icon={<ShieldCheck />} title="Acesso seguro" text="Administradores secundarios veem apenas o proprio tenant." />
+            <Feature icon={<ShieldCheck />} title="Acesso seguro" text="Administradores secundarios veem apenas a propria entidade." />
             <Feature icon={<UsersRound />} title="Voluntarios" text="Cadastro estruturado a partir das regras encontradas no PHP legado." />
           </div>
         </div>
@@ -169,7 +170,7 @@ function HomePage({ onNavigate }: { onNavigate: (page: Page) => void }) {
       <section className="section platform-band">
         <div>
           <h2>Crie uma plataforma integrada a Rede Voluntariado</h2>
-          <p>Use uma base comum, mas com dados separados por dominio: redevoluntariado para visao global e .sco para tenants especificos.</p>
+          <p>Use uma base comum, mas com dados separados por entidade: redevoluntariado para visao global e .sco para entidades especificas.</p>
         </div>
         <button className="btn light" onClick={() => onNavigate("admin")}>
           Criar plataforma
@@ -202,8 +203,8 @@ function TenantPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
         <h2>Como funciona</h2>
         <div className="steps">
           <Step icon={<UserRound />} title="Cadastro" text="O voluntario informa dados pessoais, formacao, experiencia e disponibilidade." />
-          <Step icon={<HeartHandshake />} title="Planejamento" text="A equipe do tenant organiza interesses e habilidades para futuras acoes." />
-          <Step icon={<Check />} title="Atuacao em rede" text="Os dados alimentam a plataforma principal sem quebrar isolamento por tenant." />
+          <Step icon={<HeartHandshake />} title="Planejamento" text="A equipe da entidade organiza interesses e habilidades para futuras acoes." />
+          <Step icon={<Check />} title="Atuacao em rede" text="Os dados alimentam a plataforma principal sem misturar informacoes entre entidades." />
         </div>
       </section>
 
@@ -211,8 +212,8 @@ function TenantPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
         <div>
           <h2>Identidade propria, base compartilhada</h2>
           <p>
-            A pagina preserva a linguagem verde do site antigo e usa a mesma API multi-tenant. O cadastro enviado aqui vai para o tenant
-            `presbiterianos`.
+            A pagina preserva a linguagem verde do site antigo e usa a mesma API com dados separados por entidade. O cadastro enviado aqui vai para
+            a entidade Presbiterianismo & Cidadania.
           </p>
         </div>
         <div className="identity-logos">
@@ -552,70 +553,7 @@ function RepeatableVolunteerExperience({ payload, update }: { payload: Volunteer
 }
 
 function AdminPage() {
-  const [email, setEmail] = useState("admin@redevoluntariado.org.br");
-  const [password, setPassword] = useState("admin123");
-  const [token, setToken] = useState("");
-  const [volunteers, setVolunteers] = useState<Array<{ id: string; name: string; email?: string; created_at: string }>>([]);
-  const [message, setMessage] = useState("");
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setMessage("");
-    try {
-      const session = await login(email, password);
-      setToken(session.access_token);
-      const data = await listVolunteers(session.access_token);
-      setVolunteers(data);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Erro ao acessar painel.");
-    }
-  }
-
-  return (
-    <main className="admin-page">
-      <section className="admin-login">
-        <div>
-          <h1>Painel administrativo</h1>
-          <p>Administradores do tenant principal visualizam os voluntarios de todos os dominios.</p>
-        </div>
-        <form onSubmit={submit}>
-          <label>
-            E-mail
-            <input value={email} onChange={(event) => setEmail(event.target.value)} />
-          </label>
-          <label>
-            Senha
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-          </label>
-          {message && <div className="form-status error">{message}</div>}
-          <button className="submit-button">
-            <LockKeyhole size={18} />
-            Entrar
-          </button>
-        </form>
-      </section>
-
-      {token && (
-        <section className="admin-table">
-          <h2>Voluntarios cadastrados</h2>
-          <div className="table">
-            <div className="table-row head">
-              <span>Nome</span>
-              <span>E-mail</span>
-              <span>Cadastro</span>
-            </div>
-            {volunteers.map((volunteer) => (
-              <div className="table-row" key={volunteer.id}>
-                <span>{volunteer.name}</span>
-                <span>{volunteer.email ?? "-"}</span>
-                <span>{new Date(volunteer.created_at).toLocaleDateString("pt-BR")}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-    </main>
-  );
+  return <AdminTasksArea />;
 }
 
 function Feature({ icon, title, text }: { icon: ReactNode; title: string; text: string }) {

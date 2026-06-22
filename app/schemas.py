@@ -123,3 +123,101 @@ class UserOut(BaseModel):
     active: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TaskUserOut(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    name: str
+    email: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProcessTaskInput(BaseModel):
+    title: str = Field(min_length=2, max_length=180)
+    description: str | None = None
+    priority: str = "MEDIUM"
+    step_order: int = Field(ge=1)
+    status: str | None = None
+    assignee_user_id: uuid.UUID | None = None
+    due_date: date | None = None
+
+
+class ProcessTaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=180)
+    description: str | None = None
+    priority: str | None = None
+    step_order: int | None = Field(default=None, ge=1)
+    status: str | None = None
+    assignee_user_id: uuid.UUID | None = None
+    due_date: date | None = None
+
+
+class ProcessTaskComplete(BaseModel):
+    completion_note: str = Field(min_length=1)
+
+
+class ProcessTaskOut(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    process_id: uuid.UUID
+    title: str
+    description: str | None
+    priority: str
+    step_order: int
+    status: str
+    assignee_user_id: uuid.UUID | None
+    due_date: date | None
+    completion_note: str | None
+    completed_at: datetime | None
+    completed_by_id: uuid.UUID | None
+    created_at: datetime
+    assignee: TaskUserOut | None = None
+    completed_by: TaskUserOut | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskProcessCreate(BaseModel):
+    tenant_id: uuid.UUID | None = None
+    title: str = Field(min_length=2, max_length=180)
+    description: str | None = None
+    priority: str = "MEDIUM"
+    tasks: list[ProcessTaskInput] = Field(default_factory=list)
+
+
+class TaskProcessUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=180)
+    description: str | None = None
+    priority: str | None = None
+    status: str | None = None
+    tasks: list[ProcessTaskInput] | None = None
+
+
+class TaskProcessOut(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    title: str
+    description: str | None
+    priority: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    tasks: list[ProcessTaskOut] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskSummaryOut(BaseModel):
+    pending: int
+    overdue: int
+    completed: int
+    blocked: int
+    in_progress: int
+
+
+class TaskFiltersOut(BaseModel):
+    tenants: list[TenantOut]
+    users: list[TaskUserOut]
+    processes: list[TaskProcessOut]
